@@ -2,7 +2,7 @@ use crate::error::MemcacheError;
 use byteorder::{BigEndian, ByteOrder, WriteBytesExt};
 use std::collections::HashMap;
 use std::io;
-use std::io::{Error, ErrorKind, Read, Write};
+use std::io::{Error, Read, Write};
 use std::net::UdpSocket;
 use std::time::Duration;
 use std::u16;
@@ -19,12 +19,12 @@ impl UdpStream {
     pub fn new(addr: &Url) -> Result<Self, MemcacheError> {
         let socket = UdpSocket::bind("0.0.0.0:0")?;
         socket.connect(&*addr.socket_addrs(|| None)?)?;
-        return Ok(UdpStream {
+        Ok(UdpStream {
             socket,
             read_buf: Vec::new(),
             write_buf: Vec::new(),
             request_id: rand::random::<u16>(),
-        });
+        })
     }
 
     pub(crate) fn set_read_timeout(&self, duration: Option<Duration>) -> Result<(), MemcacheError> {
@@ -76,7 +76,7 @@ impl Write for UdpStream {
             let bytes_read = self.socket.recv(&mut buf)?;
             if bytes_read < 8 {
                 // make an error here to avoid panic below
-                return Err(Error::new(ErrorKind::Other, "Invalid UDP header received"));
+                return Err(Error::other("Invalid UDP header received"));
             }
 
             let request_id = BigEndian::read_u16(&buf[0..]);
