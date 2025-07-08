@@ -617,65 +617,96 @@ fn discover_cluster_nodes(config_endpoint: &str) -> Result<Vec<String>, Memcache
     use crate::connection::Connection;
     use crate::error::ClusterError;
 
-    let url = Url::parse(config_endpoint).map_err(|e| MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!("Invalid config endpoint URL: {}", e))))?;
+    let url = Url::parse(config_endpoint).map_err(|e| {
+        MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!(
+            "Invalid config endpoint URL: {}",
+            e
+        )))
+    })?;
 
     match url.scheme() {
         "memcache" | "memcache+tls" => {}
         _ => {
-            return Err(MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!("Unsupported protocol for cluster endpoint: {}", url.scheme()))));
+            return Err(MemcacheError::ClusterError(ClusterError::InvalidConfiguration(
+                format!("Unsupported protocol for cluster endpoint: {}", url.scheme()),
+            )));
         }
     }
     // Force ASCII protocol for config commands
     let mut url_with_ascii = url.clone();
     url_with_ascii.query_pairs_mut().append_pair("protocol", "ascii");
 
-    let mut conn = Connection::connect(&url_with_ascii).map_err(|e| MemcacheError::ClusterError(ClusterError::ConnectionFailed(format!("Failed to connect to cluster config endpoint: {}", e))))?;
-    let response = conn.config("get cluster").map_err(|e| MemcacheError::ClusterError(ClusterError::NodeDiscoveryFailed(format!("Failed to retrieve cluster configuration: {}", e))))?;
+    let mut conn = Connection::connect(&url_with_ascii).map_err(|e| {
+        MemcacheError::ClusterError(ClusterError::ConnectionFailed(format!(
+            "Failed to connect to cluster config endpoint: {}",
+            e
+        )))
+    })?;
+    let response = conn.config("get cluster").map_err(|e| {
+        MemcacheError::ClusterError(ClusterError::NodeDiscoveryFailed(format!(
+            "Failed to retrieve cluster configuration: {}",
+            e
+        )))
+    })?;
 
-    parse_cluster_response(&response)
+    parse_cluster_response(url.scheme(), &response)
 }
 
 /// Parse ElastiCache cluster configuration response and return memcache URLs
 #[cfg(feature = "elasticache-cluster")]
-fn parse_cluster_response(response: &str) -> Result<Vec<String>, MemcacheError> {
+fn parse_cluster_response(scheme: &str, response: &str) -> Result<Vec<String>, MemcacheError> {
     use crate::error::ClusterError;
-    
+
     let mut lines = response.lines();
 
-    // Find the CONFIG line
-    let config_line = lines
-        .find(|line| line.starts_with("CONFIG"))
-        .ok_or_else(|| MemcacheError::ClusterError(ClusterError::InvalidConfiguration("No CONFIG line found in cluster response".to_string())))?;
+    dbg!(&lines);
 
-    // Parse CONFIG line: "CONFIG cluster 0 {length}"
+    let config_line = lines.next().ok_or_else(|| {
+        MemcacheError::ClusterError(ClusterError::InvalidConfiguration(
+            "No CONFIG line found in cluster response".to_string(),
+        ))
+    })?;
     let parts: Vec<&str> = config_line.split_whitespace().collect();
-    if parts.len() != 4 || parts[0] != "CONFIG" || parts[1] != "elasticache-cluster" {
-        return Err(MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!("Invalid CONFIG line format: {}", config_line))));
+    if parts.len() != 4 || parts[0] != "CONFIG" {
+        return Err(MemcacheError::ClusterError(ClusterError::InvalidConfiguration(
+            format!("Invalid CONFIG line format: {}", config_line),
+        )));
     }
 
     // Read the cluster configuration data
-    let config_data = lines
-        .next()
-        .ok_or_else(|| MemcacheError::ClusterError(ClusterError::InvalidConfiguration("Missing cluster data after CONFIG line".to_string())))?;
+    let _version = lines.next().ok_or_else(|| {
+        MemcacheError::ClusterError(ClusterError::InvalidConfiguration(
+            "Missing config version data after CONFIG line".to_string(),
+        ))
+    })?;
+
+    // Version of the config provideded. Each time the cluster is
+    // modified this is incremented.
+    let config_data = lines.next().ok_or_else(|| {
+        MemcacheError::ClusterError(ClusterError::InvalidConfiguration(
+            "Missing config data after VERSION line".to_string(),
+        ))
+    })?;
 
     // ElastiCache cluster config format: host1|ip1|port1 host2|ip2|port2 ...
     let mut urls = Vec::new();
-
     for node_spec in config_data.split_whitespace() {
         let parts: Vec<&str> = node_spec.split('|').collect();
         if parts.len() != 3 {
-            return Err(MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!(
-                "Invalid node specification: {}",
-                node_spec
-            ))));
+            return Err(MemcacheError::ClusterError(ClusterError::InvalidConfiguration(
+                format!("Invalid node specification: {}", node_spec),
+            )));
         }
 
         let host = parts[0]; // Use DNS name
-        let port = parts[2]
-            .parse::<u16>()
-            .map_err(|_| MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!("Invalid port in node spec: {}", parts[2]))))?;
+        let port = parts[2].parse::<u16>().map_err(|_| {
+            MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!(
+                "Invalid port in node spec: {}",
+                parts[2]
+            )))
+        })?;
 
-        urls.push(format!("memcache://{}:{}", host, port));
+        urls.push(format!("{}://{}:{}", scheme, host, port));
     }
 
     if urls.is_empty() {
@@ -812,6 +843,20 @@ mod tests {
             .with_connection_timeout(Duration::from_secs(2))
             .build();
         assert!(client.is_ok(), "Should successfully build with all optional parameters");
+    }
+
+    #[cfg(feature = "elasticache-cluster")]
+    #[test]
+    fn parse_elasticache_cluster_config() {
+        let config = "CONFIG cluster 0 208\r\n2\n\
+        memcached-1.amazonaws.com|10.192.25.001|11211 \
+        memcached-2.amazonaws.com|10.192.25.002|11211 \
+        memcached-3.amazonaws.com|10.192.25.003|11211\n\r\n";
+
+        let urls = super::parse_cluster_response("memcache+tls", config).expect("error parsing urls");
+        assert_eq!(urls[0], "memcache+tls://memcached-1.amazonaws.com:11211");
+        assert_eq!(urls[1], "memcache+tls://memcached-2.amazonaws.com:11211");
+        assert_eq!(urls[2], "memcache+tls://memcached-3.amazonaws.com:11211");
     }
 
     #[cfg(unix)]
