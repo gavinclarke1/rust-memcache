@@ -500,6 +500,22 @@ impl ClientBuilder {
         Ok(self)
     }
 
+    /// Add an ElastiCache cluster by discovering nodes from the configuration endpoint.
+    /// This method fetches the current cluster topology and adds all nodes to the client.
+    ///
+    /// Example:
+    /// ```rust
+    /// let client = memcache::Client::builder()
+    ///     .add_cluster("my-cluster.cache.amazonaws.com:11211")?
+    ///     .build()?;
+    /// ```
+    #[cfg(feature = "elasticache-cluster")]
+    pub fn add_cluster(mut self, config_endpoint: &str) -> Result<Self, MemcacheError> {
+        let urls = discover_cluster_nodes(config_endpoint)?;
+        self.targets.extend(urls);
+        Ok(self)
+    }
+
     /// Set the maximum number of connections managed by the pool.
     pub fn with_max_pool_size(mut self, max_size: u32) -> Self {
         self.max_size = max_size;
@@ -593,6 +609,92 @@ impl ClientBuilder {
 
         Ok(client)
     }
+}
+
+/// Discover cluster nodes from an ElastiCache configuration endpoint
+#[cfg(feature = "elasticache-cluster")]
+fn discover_cluster_nodes(config_endpoint: &str) -> Result<Vec<String>, MemcacheError> {
+    use crate::connection::Connection;
+    use crate::error::ClusterError;
+
+    let url = Url::parse(config_endpoint).map_err(|e| MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!("Invalid config endpoint URL: {}", e))))?;
+
+    match url.scheme() {
+        "memcache" | "memcache+tls" => {}
+        _ => {
+            return Err(MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!("Unsupported protocol for cluster endpoint: {}", url.scheme()))));
+        }
+    }
+    // Force ASCII protocol for config commands
+    let mut url_with_ascii = url.clone();
+    url_with_ascii.query_pairs_mut().append_pair("protocol", "ascii");
+
+    let mut conn = Connection::connect(&url_with_ascii).map_err(|e| MemcacheError::ClusterError(ClusterError::ConnectionFailed(format!("Failed to connect to cluster config endpoint: {}", e))))?;
+    let response = conn.config("get cluster").map_err(|e| MemcacheError::ClusterError(ClusterError::NodeDiscoveryFailed(format!("Failed to retrieve cluster configuration: {}", e))))?;
+
+    parse_cluster_response(&response)
+}
+
+/// Parse ElastiCache cluster configuration response and return memcache URLs
+#[cfg(feature = "elasticache-cluster")]
+fn parse_cluster_response(response: &str) -> Result<Vec<String>, MemcacheError> {
+    use crate::error::ClusterError;
+    
+    let mut lines = response.lines();
+
+    // Find the CONFIG line
+    let config_line = lines
+        .find(|line| line.starts_with("CONFIG"))
+        .ok_or_else(|| MemcacheError::ClusterError(ClusterError::InvalidConfiguration("No CONFIG line found in cluster response".to_string())))?;
+
+    // Parse CONFIG line: "CONFIG cluster 0 {length}"
+    let parts: Vec<&str> = config_line.split_whitespace().collect();
+    if parts.len() != 4 || parts[0] != "CONFIG" || parts[1] != "elasticache-cluster" {
+        return Err(MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!("Invalid CONFIG line format: {}", config_line))));
+    }
+
+    // Read the cluster configuration data
+    let config_data = lines
+        .next()
+        .ok_or_else(|| MemcacheError::ClusterError(ClusterError::InvalidConfiguration("Missing cluster data after CONFIG line".to_string())))?;
+
+    // ElastiCache cluster config format: host1|ip1|port1 host2|ip2|port2 ...
+    let mut urls = Vec::new();
+
+    for node_spec in config_data.split_whitespace() {
+        let parts: Vec<&str> = node_spec.split('|').collect();
+        if parts.len() != 3 {
+            return Err(MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!(
+                "Invalid node specification: {}",
+                node_spec
+            ))));
+        }
+
+        let host = parts[0]; // Use DNS name
+        let port = parts[2]
+            .parse::<u16>()
+            .map_err(|_| MemcacheError::ClusterError(ClusterError::InvalidConfiguration(format!("Invalid port in node spec: {}", parts[2]))))?;
+
+        urls.push(format!("memcache://{}:{}", host, port));
+    }
+
+    if urls.is_empty() {
+        return Err(MemcacheError::ClusterError(ClusterError::NoHealthyNodes));
+    }
+
+    Ok(urls)
+}
+
+/// Convenience function to create a client from an ElastiCache cluster endpoint
+///
+/// Example:
+/// ```rust
+/// let client = memcache::connect_cluster("my-cluster.cache.amazonaws.com:11211")?;
+/// ```
+#[cfg(feature = "elasticache-cluster")]
+pub fn connect_cluster(config_endpoint: &str) -> Result<Client, MemcacheError> {
+    let urls = discover_cluster_nodes(config_endpoint)?;
+    Client::connect(urls)
 }
 
 #[cfg(test)]

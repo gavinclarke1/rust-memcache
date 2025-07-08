@@ -47,4 +47,5 @@ pub trait ProtocolTrait {
     fn decrement(&mut self, key: &str, amount: u64) -> Result<u64, MemcacheError>;
     fn touch(&mut self, key: &str, expiration: u32) -> Result<bool, MemcacheError>;
     fn stats(&mut self) -> Result<Stats, MemcacheError>;
+    fn config(&mut self, subcommand: &str) -> Result<String, MemcacheError>;
 }

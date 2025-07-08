@@ -140,6 +140,45 @@ impl From<ServerError> for MemcacheError {
     }
 }
 
+/// Cluster-related errors
+#[cfg(feature = "elasticache-cluster")]
+#[derive(Debug, PartialEq)]
+pub enum ClusterError {
+    /// Failed to connect to one or more cluster nodes.
+    ConnectionFailed(String),
+    /// Cluster configuration is invalid or incomplete.
+    InvalidConfiguration(String),
+    /// Unable to discover cluster nodes.
+    NodeDiscoveryFailed(String),
+    /// Cluster state is inconsistent.
+    InconsistentState(String),
+    /// No healthy nodes available in the cluster.
+    NoHealthyNodes,
+    /// Generic cluster error with custom message.
+    Error(String),
+}
+
+#[cfg(feature = "elasticache-cluster")]
+impl fmt::Display for ClusterError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            ClusterError::ConnectionFailed(msg) => write!(f, "Cluster connection failed: {}", msg),
+            ClusterError::InvalidConfiguration(msg) => write!(f, "Invalid cluster configuration: {}", msg),
+            ClusterError::NodeDiscoveryFailed(msg) => write!(f, "Node discovery failed: {}", msg),
+            ClusterError::InconsistentState(msg) => write!(f, "Cluster state inconsistent: {}", msg),
+            ClusterError::NoHealthyNodes => write!(f, "No healthy nodes available in cluster"),
+            ClusterError::Error(msg) => write!(f, "Cluster error: {}", msg),
+        }
+    }
+}
+
+#[cfg(feature = "elasticache-cluster")]
+impl From<ClusterError> for MemcacheError {
+    fn from(err: ClusterError) -> Self {
+        MemcacheError::ClusterError(err)
+    }
+}
+
 #[derive(Debug)]
 pub enum ParseError {
     Bool(str::ParseBoolError),
@@ -231,6 +270,9 @@ pub enum MemcacheError {
     ServerError(ServerError),
     /// Command specific Errors
     CommandError(CommandError),
+    /// Cluster Errors
+    #[cfg(feature = "elasticache-cluster")]
+    ClusterError(ClusterError),
     #[cfg(feature = "tls")]
     OpensslError(openssl::ssl::HandshakeError<std::net::TcpStream>),
     /// Parse errors
@@ -250,6 +292,8 @@ impl fmt::Display for MemcacheError {
             MemcacheError::ClientError(ref err) => err.fmt(f),
             MemcacheError::ServerError(ref err) => err.fmt(f),
             MemcacheError::CommandError(ref err) => err.fmt(f),
+            #[cfg(feature = "elasticache-cluster")]
+            MemcacheError::ClusterError(ref err) => err.fmt(f),
             MemcacheError::PoolError(ref err) => err.fmt(f),
         }
     }
@@ -266,6 +310,8 @@ impl error::Error for MemcacheError {
             MemcacheError::ClientError(_) => None,
             MemcacheError::ServerError(_) => None,
             MemcacheError::CommandError(_) => None,
+            #[cfg(feature = "elasticache-cluster")]
+            MemcacheError::ClusterError(_) => None,
             MemcacheError::PoolError(ref p) => p.source(),
         }
     }

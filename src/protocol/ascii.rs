@@ -328,6 +328,21 @@ impl ProtocolTrait for AsciiProtocol<Stream> {
             }
         }
     }
+
+    fn config(&mut self, subcommand: &str) -> Result<String, MemcacheError> {
+        write!(self.reader.get_mut(), "config {}\r\n", subcommand)?;
+        self.reader.get_mut().flush()?;
+
+        let mut response = String::new();
+        loop {
+            let line = self.reader.read_line(|line| Ok(line.to_string()))?;
+            if line == END {
+                break;
+            }
+            response.push_str(&line);
+        }
+        Ok(response)
+    }
 }
 
 impl AsciiProtocol<Stream> {

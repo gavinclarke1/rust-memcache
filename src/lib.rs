@@ -80,6 +80,8 @@ mod protocol;
 mod stream;
 mod value;
 
+#[cfg(feature = "elasticache-cluster")]
+pub use crate::client::connect_cluster;
 pub use crate::client::{Client, ClientBuilder, Connectable};
 pub use crate::connection::ConnectionManager;
 pub use crate::error::{ClientError, CommandError, MemcacheError, ServerError};

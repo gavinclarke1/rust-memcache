@@ -247,6 +247,14 @@ impl ProtocolTrait for BinaryProtocol {
         let stats_info = binary_packet::parse_stats_response(&mut self.stream)?;
         return Ok(stats_info);
     }
+
+    fn config(&mut self, _subcommand: &str) -> Result<String, MemcacheError> {
+        // Config command is not supported in binary protocol
+        // ElastiCache configuration endpoints typically use ASCII protocol
+        Err(MemcacheError::ClientError(crate::error::ClientError::Error(
+            std::borrow::Cow::Borrowed("Config command not supported in binary protocol"),
+        )))
+    }
 }
 
 impl BinaryProtocol {
